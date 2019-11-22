@@ -1,0 +1,5 @@
+*.csv
+*.ini
+!ini/sample.config.ini
+
+bot_env/
