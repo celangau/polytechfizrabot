@@ -168,7 +168,12 @@ def handle_attendance(id, mode, query):
 
 @telegram.message_handler(commands=["start", "help"])
 def handle_start(msg):
-	telegram.send_message(msg.chat.id, inspect.cleandoc(config["General"]["HelpMessage"]))
+	telegram.send_message(
+		msg.chat.id,
+		inspect.cleandoc(config["General"]["HelpMessage"]),
+		parse_mode = "Markdown",
+		disable_web_page_preview = True
+	)
 
 
 @telegram.message_handler(commands=["name", "group"])
