@@ -20,7 +20,9 @@ from datetime import datetime
 from enum import Enum
 import configparser
 import csv
+import hashlib
 import inspect
+import io
 import logging
 import telebot
 import requests
@@ -86,7 +88,6 @@ user_history.read(C_USER_HISTORY_PATH)
 # Бот
 telegram = telebot.TeleBot(config["General"]["TelegramBotToken"])
 
-
 # Функция-фильтр для поиска студента в базе
 def filter_student(search_mode, entry, query):
     # При поиске по имени проверяется наличие поискового
@@ -112,31 +113,47 @@ def save_ini(ini, path):
 
 # Проверяет необходимость обновления локального CSV файла
 def check_csv():
-    updated_at = (
-        datetime.fromtimestamp(int(config["General"]["CsvUpdatedAt"]))
-        if "CsvUpdatedAt" in config["General"]
+    loaded_at = datetime.fromtimestamp(
+        int(config["General"]["CsvLoadedAt"])
+        if "CsvLoadedAt" in config["General"]
         else 0
     )
     now = datetime.now()
 
-    if int((now - updated_at).total_seconds()) >= C_MAX_CACHE_TIME:
-        with open(csv_path, "w+b") as csv_file:
-            response = requests.get(csv_url)
-            if response.status_code != 200:
-                log.error(
-                    "Невозможно обновить CSV, получен код {}".format(
-                        response.status_code
-                    )
-                )
-            else:
-                try:
-                    csv_file.write(response.content)
-                    updated_at = str(int(datetime.timestamp(datetime.now())))
-                    config["General"]["CsvUpdatedAt"] = updated_at
-                    save_ini(config, C_CONFIG_PATH)
-                    log.info("CSV успешно обновлён")
-                except:
-                    log.error("Невозможно обновить CSV, ошибка при сохранении данных")
+    time_delta = int((now - loaded_at).total_seconds())
+    if time_delta >= C_MAX_CACHE_TIME:
+        log.info(
+            "Запуск обновления (последнее было {} секунд назад)".format(time_delta)
+        )
+        response = requests.get(csv_url)
+        if response.status_code != 200:
+            log.error(
+                "Невозможно обновить CSV, получен код {}".format(response.status_code)
+            )
+            return
+        loaded_at = str(int(datetime.timestamp(datetime.now())))
+        config["General"]["CsvLoadedAt"] = loaded_at
+
+        # Новый CSV может быть успешно загружен, но не всегда в нём будут изменения.
+        # Для их обнаружения используется сравнение хешей содержимого
+        old_hash = (
+            config["General"]["CsvHash"] if "CsvHash" in config["General"] else ""
+        )
+        new_hash = hashlib.sha256(response.content).hexdigest()
+        if old_hash == new_hash:
+            log.info("В загруженном CSV нет изменений")
+            return
+
+        try:
+            with open(csv_path, "w+b") as csv_file:
+                csv_file.write(response.content)
+            config["General"]["CsvUpdatedAt"] = loaded_at
+            config["General"]["CsvHash"] = new_hash
+            log.info("Обновлённый CSV успешно сохранён")
+        except:
+            log.error("Невозможно обновить CSV, ошибка при сохранении данных")
+        finally:
+            save_ini(config, C_CONFIG_PATH)
 
 
 # Генерирует сообщение с посещаемостью занятий, при необходимости
