@@ -25,6 +25,7 @@ import inspect
 import io
 import logging
 import telebot
+import os.path
 import requests
 import time
 
@@ -88,6 +89,16 @@ user_history.read(C_USER_HISTORY_PATH)
 # Бот
 telegram = telebot.TeleBot(config["General"]["TelegramBotToken"])
 
+# CSV удерживается в памяти, чтобы при каждом поиске не считывать его с диска
+# При запуске бота в память читается сохранённый на диске CSV-файл
+current_csv = ""
+if os.path.exists(csv_path):
+    with open(csv_path, "r") as csv_file:
+        current_csv = csv_file.read()
+        log.info("CSV-файл успешно загружен с диска")
+else:
+    log.warn("CSV-файл не существует, он будет загружен при первом обновлении")
+
 # Функция-фильтр для поиска студента в базе
 def filter_student(search_mode, entry, query):
     # При поиске по имени проверяется наличие поискового
@@ -108,11 +119,16 @@ def save_ini(ini, path):
         with open(path, "w") as config_file:
             ini.write(config_file)
     except:
-        log.error("Невозможно сохранить ini файл, все изменения остаются в памяти")
+        log.error(
+            "Невозможно сохранить ini файл, все изменения остаются в памяти",
+            exc_info=True,
+        )
 
 
 # Проверяет необходимость обновления локального CSV файла
 def check_csv():
+    global current_csv
+
     loaded_at = datetime.fromtimestamp(
         int(config["General"]["CsvLoadedAt"])
         if "CsvLoadedAt" in config["General"]
@@ -125,35 +141,41 @@ def check_csv():
         log.info(
             "Запуск обновления (последнее было {} секунд назад)".format(time_delta)
         )
-        response = requests.get(csv_url)
-        if response.status_code != 200:
-            log.error(
-                "Невозможно обновить CSV, получен код {}".format(response.status_code)
-            )
+
+        response = None
+        try:
+            response = requests.get(csv_url)
+            if response.status_code != 200:
+                raise Exception(
+                    "Получен HTTP-код {}, ожидался 200".format(response.status_code)
+                )
+        except:
+            log.error("Ошибка при обновлении CSV", exc_info=True)
             return
+
+        loaded_csv = response.content
         loaded_at = str(int(datetime.timestamp(datetime.now())))
         config["General"]["CsvLoadedAt"] = loaded_at
 
         # Новый CSV может быть успешно загружен, но не всегда в нём будут изменения.
         # Для их обнаружения используется сравнение хешей содержимого
-        old_hash = (
-            config["General"]["CsvHash"] if "CsvHash" in config["General"] else ""
-        )
-        new_hash = hashlib.sha256(response.content).hexdigest()
+        old_hash = hashlib.sha256(current_csv.encode()).hexdigest()
+        new_hash = hashlib.sha256(loaded_csv).hexdigest()
         if old_hash == new_hash:
             log.info("В загруженном CSV нет изменений")
-            return
+        else:
+            try:
+                current_csv = loaded_csv.decode("utf-8")
+                with open(csv_path, "w+b") as csv_file:
+                    csv_file.write(loaded_csv)
+                config["General"]["CsvUpdatedAt"] = loaded_at
+                log.info("Обновлённый CSV успешно сохранён")
+            except:
+                log.error(
+                    "Ошибка при сохранении обновлённого CSV", exc_info=True,
+                )
 
-        try:
-            with open(csv_path, "w+b") as csv_file:
-                csv_file.write(response.content)
-            config["General"]["CsvUpdatedAt"] = loaded_at
-            config["General"]["CsvHash"] = new_hash
-            log.info("Обновлённый CSV успешно сохранён")
-        except:
-            log.error("Невозможно обновить CSV, ошибка при сохранении данных")
-        finally:
-            save_ini(config, C_CONFIG_PATH)
+        save_ini(config, C_CONFIG_PATH)
 
 
 # Генерирует сообщение с посещаемостью занятий, при необходимости
@@ -163,18 +185,17 @@ def handle_attendance(id, mode, query):
 
     attendance_message = []
     try:
-        with open(csv_path) as csv_file:
-            reader = csv.reader(csv_file)
-            for row in [x for x in reader if filter_student(mode, x, query)]:
-                # Посещения = число непустых ячеек после столбца №C_CSV_SKIP_COLUMNS
-                attendance = len([e for e in row[C_CSV_SKIP_COLUMNS:] if len(e) > 0])
-                attendance_message.append(
-                    "{} (группа {})\nПосещений: {}".format(row[0], row[1], attendance)
-                )
-                if len(attendance_message) == C_CSV_MAX_STUDENTS:
-                    break
+        reader = csv.reader(current_csv.splitlines())
+        for row in [x for x in reader if filter_student(mode, x, query)]:
+            # Посещения = число непустых ячеек после столбца №C_CSV_SKIP_COLUMNS
+            attendance = len([e for e in row[C_CSV_SKIP_COLUMNS:] if len(e) > 0])
+            attendance_message.append(
+                "{} (группа {})\nПосещений: {}".format(row[0], row[1], attendance)
+            )
+            if len(attendance_message) == C_CSV_MAX_STUDENTS:
+                break
     except:
-        log.error("Ошибка при поиске в CSV")
+        log.error("Ошибка при поиске в CSV", exc_info=True)
     attendance_message = "\n\n".join(attendance_message)
 
     has_attendace = len(attendance_message) > 0
@@ -248,7 +269,7 @@ while True:
         log.info("Запуск бота")
         telegram.polling()
         break  # Срабатывает при нормальном завершении работы
-    except Exception as e:
-        log.error("Ошибка бота", e)
+    except:
+        log.error("Ошибка бота", exc_info=True)
         log.info("Ожидание {} секунд перед перезапуском...".format(C_BOT_RESTART_PAUSE))
         time.sleep(C_BOT_RESTART_PAUSE)
