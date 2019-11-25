@@ -236,7 +236,6 @@ def handle_search(msg):
         telegram.send_message(msg.chat.id, "Некорректная длина поискового запроса")
         return
 
-    check_csv()
     handle_attendance(msg.chat.id, mode, query)
 
 
