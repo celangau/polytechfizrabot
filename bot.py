@@ -18,6 +18,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from datetime import datetime
 from enum import Enum
+from threading import Lock
 import configparser
 import csv
 import hashlib
@@ -88,6 +89,7 @@ user_history.read(C_USER_HISTORY_PATH)
 
 # Бот
 telegram = telebot.TeleBot(config["General"]["TelegramBotToken"])
+update_lock = Lock()
 
 # CSV удерживается в памяти, чтобы при каждом поиске не считывать его с диска
 # При запуске бота в память читается сохранённый на диске CSV-файл
@@ -181,7 +183,12 @@ def check_csv():
 # Генерирует сообщение с посещаемостью занятий, при необходимости
 # сохраняет успешный поисковый запрос в историю
 def handle_attendance(id, mode, query):
-    check_csv()
+    global update_lock
+    try:
+        update_lock.acquire()
+        check_csv()
+    finally:
+        update_lock.release()
 
     attendance_message = []
     try:
